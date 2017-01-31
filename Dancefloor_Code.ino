@@ -18,36 +18,36 @@
 
 #define latch_pin 2// can use any pin you want to latch the shift registers
 #define blank_pin 4// same, can use any pin you want for this, just make sure you pull up via a 1k to 5V
-#define data_pin 11// used by SPI, must be pin 11
-#define clock_pin 13// used by SPI, must be 13
+#define data_pin 11// used by SPI, 51 on mega
+#define clock_pin 13// used by SPI, 52 on mega
 
 //***variables***variables***variables***variables***variables***variables***variables***variables
 //These variables are used by multiplexing and Bit Angle Modulation Code
 int shift_out;//used in the code a lot in for(i= type loops
-int activeRow = 0;
-
-const int tileRows = 4;
-const int tileCols = 8;
-const int totalTiles = tileRows * tileCols;
-
-//This is how the brightness for every LED is stored,
-//Each LED only needs a 'bit' to know if it should be ON or OFF, so 64 Bytes gives you 512 bits= 512 LEDs
-//Since we are modulating the LEDs, using 4 bit resolution, each color has 4 arrays containing 64 bits each
-//Only the 4 least significant bits of each byte contain the information to be written
-byte red0[totalTiles*4], red1[totalTiles*4], red2[totalTiles*4], red3[totalTiles*4];
-byte blue0[totalTiles*4], blue1[totalTiles*4], blue2[totalTiles*4], blue3[totalTiles*4];
-byte green0[totalTiles*4], green1[totalTiles*4], green2[totalTiles*4], green3[totalTiles*4];
-//notice how more resolution will eat up more of your precious RAM
-
-int anodelevel = 0; //this increments through the anode levels
-int BAM_Bit, BAM_Counter = 0; // Bit Angle Modulation variables to keep track of things
-
 byte anode[4] = {
   0b00001110,
   0b00001101,
   0b00001011,
   0b00000111
 };
+
+int activeRow = 0;
+
+const int tileRows = 2;
+const int tileCols = 2;
+const int totalTiles = tileRows * tileCols;
+
+//This is how the brightness for every LED is stored,
+//Each LED only needs a 'bit' to know if it should be ON or OFF, so 64 Bytes gives you 512 bits= 512 LEDs
+//Since we are modulating the LEDs, using 4 bit resolution, each color has 4 arrays containing 64 bits each
+//Only 4 bits of each byte contain the information to be written
+byte red01[totalTiles*4], red23[totalTiles*4];
+byte green01[totalTiles*4], green23[totalTiles*4];
+byte blue01[totalTiles*4], blue23[totalTiles*4];
+//notice how more resolution will eat up more of your precious RAM
+
+int anodelevel = 0; //this increments through the anode levels
+int BAM_Bit, BAM_Counter = 0; // Bit Angle Modulation variables to keep track of things
 
 //These variables can be used for other things
 unsigned long start;//for a millis timer to cycle through the animations
@@ -80,6 +80,8 @@ void setup() {
   SPI.begin();//start up the SPI library
   interrupts();//let the show begin, this lets the multiplexing start
 
+  Serial.begin(9600);
+
 }//***end setup***end setup***end setup***end setup***end setup***end setup***end setup***end setup***end setup***end setup
 
 
@@ -106,53 +108,51 @@ void LED(int row, int column, byte red, byte green, byte blue) { //****LED Routi
 
   // First, check and make sure nothing went beyond the limits, just clamp things at either 0 or 7 for location, and 0 or 15 for brightness
 
-  if (row < 0)
-    row = 0;
-  if (row > tileRows * 4)
-    row = tileRows * 4;
-  if (column < 0)
-    column = 0;
-  if (column > tileCols * 4)
-    column = tileCols * 4;
-  if (red < 0)
-    red = 0;
-  if (red > 15)
-    red = 15;
-  if (green < 0)
-    green = 0;
-  if (green > 15)
-    green = 15;
-  if (blue < 0)
-    blue = 0;
-  if (blue > 15)
-    blue = 15;
+//  if (row < 0)
+//    row = 0;
+//  if (row > tileRows<<2)
+//    row = tileRows * 4;
+//  if (column < 0)
+//    column = 0;
+//  if (column > tileCols<<2)
+//    column = tileCols * 4;
+//  if (red < 0)
+//    red = 0;
+//  if (red > 15)
+//    red = 15;
+//  if (green < 0)
+//    green = 0;
+//  if (green > 15)
+//    green = 15;
+//  if (blue < 0)
+//    blue = 0;
+//  if (blue > 15)
+//    blue = 15;
 
 
   //There are 512 LEDs in the floor, that needs to be translated into a number from 0 to 511
   //The way I did indexing matches how the individual bytes are written in the final design. The first row of each tile represents the first 1/4 of the indexes, the next row the next 1/4 and so on.
   //from there I used the ternary operator to allow the indices to zigzag across the dancefloor with the tiles.
-  int whichbyte = int(column % 8 < 4 ? row % 4 * totalTiles + (column >> 3) * tileRows * 8 + (row >> 2) * 16 : row % 4 * totalTiles + (column >> 3 + 1) * tileRows * 8 - (row >> 2) * 16);
-  int whichbit = int(column % 4);
+  int whichbyte = int((column&0x07) < 4 ? (row&0x03) * totalTiles + (column >> 3) * (tileRows<<1) + (row >> 2) : row&0x03 * totalTiles + ((column >> 3) + 1) * tileRows<<1 - (row >> 2) - 1);
+  int whichbit = int(column&0x03);
 
 
   //These arrays contain the 4 bits of the color resolution. Each byte contains 4 bits of useful information. red and blue contain it in the most significant
   //4 bits. Green in the least. This is because they will be bitwise OR'd together later to send the two byte package to each tile in the form R,G,B,row
-  bitWrite(red0[whichbyte], whichbit + 4, bitRead(red, 0));
-  bitWrite(red1[whichbyte], whichbit + 4, bitRead(red, 1));
-  bitWrite(red2[whichbyte], whichbit + 4, bitRead(red, 2));
-  bitWrite(red3[whichbyte], whichbit + 4, bitRead(red, 3));
+  bitWrite(red01[whichbyte], whichbit, bitRead(red, 0));
+  bitWrite(red01[whichbyte], whichbit + 4, bitRead(red, 1));
+  bitWrite(red23[whichbyte], whichbit, bitRead(red, 2));
+  bitWrite(red23[whichbyte], whichbit + 4, bitRead(red, 3));
 
-  bitWrite(green0[whichbyte], whichbit, bitRead(green, 0));
-  bitWrite(green1[whichbyte], whichbit, bitRead(green, 1));
-  bitWrite(green2[whichbyte], whichbit, bitRead(green, 2));
-  bitWrite(green3[whichbyte], whichbit, bitRead(green, 3));
+  bitWrite(green01[whichbyte], whichbit, bitRead(green, 0));
+  bitWrite(green01[whichbyte], whichbit + 4, bitRead(green, 1));
+  bitWrite(green23[whichbyte], whichbit, bitRead(green, 2));
+  bitWrite(green23[whichbyte], whichbit + 4, bitRead(green, 3));
 
-  bitWrite(blue0[whichbyte], whichbit + 4, bitRead(blue, 0));
-  bitWrite(blue1[whichbyte], whichbit + 4, bitRead(blue, 1));
-  bitWrite(blue2[whichbyte], whichbit + 4, bitRead(blue, 2));
-  bitWrite(blue3[whichbyte], whichbit + 4, bitRead(blue, 3));
-
-
+  bitWrite(blue01[whichbyte], whichbit, bitRead(blue, 0));
+  bitWrite(blue01[whichbyte], whichbit + 4, bitRead(blue, 1));
+  bitWrite(blue23[whichbyte], whichbit, bitRead(blue, 2));
+  bitWrite(blue23[whichbyte], whichbit + 4, bitRead(blue, 3));
 
 }//****LED routine end****LED routine end****LED routine end****LED routine end****LED routine end****LED routine end****LED routine end
 
@@ -182,31 +182,29 @@ ISR(TIMER1_COMPA_vect) { //***MultiPlex BAM***MultiPlex BAM***MultiPlex BAM***Mu
   BAM_Counter++;//Here is where we increment the BAM counter
 
   switch (BAM_Bit) { //The BAM bit will be a value from 0-3, and only shift out the arrays corresponding to that bit, 0-3
-    //Here's how this works, each case is the bit in the Bit angle modulation from 0-4,
-    //Next, it depends on which level we're on, so the byte in the array to be written depends on which level, but since each level contains 64 LED,
-    //we only shift out 8 bytes for each color
+    //Here's how this works, each case is the bit in the Bit angle modulation from 0-4, 
     case 0:
       for (shift_out = activeRow; shift_out < activeRow + totalTiles; shift_out++) {
-        SPI.transfer(blue0[shift_out] & anode[BAM_Counter % 4]);
-        SPI.transfer(red0[shift_out] & green0[shift_out]);
+        SPI.transfer((red01[shift_out]<<4) | (green01[shift_out]&0x0F));
+        SPI.transfer((blue01[shift_out]<<4) | anode[BAM_Counter%4]);
       }
       break;
     case 1:
       for (shift_out = activeRow; shift_out < activeRow + totalTiles; shift_out++) {
-        SPI.transfer(blue1[shift_out] & anode[BAM_Counter % 4]);
-        SPI.transfer(red1[shift_out] & green1[shift_out]);
+        SPI.transfer((red01[shift_out]&0xF0) | (green01[shift_out]>>4));
+        SPI.transfer((blue01[shift_out]&0xF0) | anode[BAM_Counter%4]);
       }
       break;
     case 2:
       for (shift_out = activeRow; shift_out < activeRow + totalTiles; shift_out++) {
-        SPI.transfer(blue2[shift_out] & anode[BAM_Counter % 4]);
-        SPI.transfer(red2[shift_out] & green2[shift_out]);
+        SPI.transfer((red23[shift_out]<<4) | (green23[shift_out]&0x0F));
+        SPI.transfer((blue23[shift_out]<<4) | anode[BAM_Counter%4]);
       }
       break;
     case 3:
       for (shift_out = activeRow; shift_out < activeRow + totalTiles; shift_out++) {
-        SPI.transfer(blue3[shift_out] & anode[BAM_Counter % 4]);
-        SPI.transfer(red3[shift_out] & green3[shift_out]);
+        SPI.transfer((red23[shift_out]&0xF0) | (green23[shift_out]>>4));
+        SPI.transfer((blue23[shift_out]&0xF0) | anode[BAM_Counter%4]);
       }
       //Here is where the BAM_Counter is reset back to 0, it's only 4 bit, but since each cycle takes 4 counts,
       if (BAM_Counter == 60) {
@@ -220,7 +218,7 @@ ISR(TIMER1_COMPA_vect) { //***MultiPlex BAM***MultiPlex BAM***MultiPlex BAM***Mu
   PORTD &= ~(1 << latch_pin); //Latch pin LOW
   PORTD &= ~(1 << blank_pin); //Blank pin LOW to turn on the LEDs with the new data
 
-  activeRow = activeRow + totalTiles; //increment the level variable by 8, which is used to shift out data, since the next level woudl be the next 8 bytes in the arrays
+  activeRow = activeRow + totalTiles;
 
   if (activeRow >= totalTiles * 4) //if you hit 64 on level, this means you just sent out all 63 bytes, so go back
     activeRow = 0;
@@ -239,6 +237,7 @@ void testFade() {
   int delRed = -1, delGreen = 0, delBlue = 0;
   while (true) {
     if (millis() > start + 50) {
+      start = millis();
       if (red == 0 && delRed == -1) delRed = 1;
       if (red == 15 && delRed == 1) {
         delRed = 0;
@@ -263,7 +262,10 @@ void testFade() {
           LED(xxx, yyy, red, green, blue);
         }
       }
+      
     }
   }
 }
+
+
 

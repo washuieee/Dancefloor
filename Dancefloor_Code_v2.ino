@@ -1,17 +1,17 @@
 
 /*
-  Code stolen / adapted from here: http://www.instructables.com/id/8X8X8-RGB-LED-Cube/step7/DOCUMENTATION-and-Firmware-for-Programming-and-con/
+  Code adapted from here: http://www.instructables.com/id/8X8X8-RGB-LED-Cube/step7/DOCUMENTATION-and-Firmware-for-Programming-and-con/
 
-  This currently is designed to control an 8x8x8 cube, controlling 192 RGB leds individually and then having a mosfet to cycle through each of the 8 layers.
-  Essentially controlling 200 outputs total
-  We need it to control more leds, but we only have 4 "layers" and we need to control 12 leds at a time per tile. We currently have 32 tiles, so we need to control 512 outputs,
-  but more if we expand the floor.
+  This Program is for an rgb dancefloor made of 4x4 tiles and hooked up tile to tile, starting in the top left, proceding downwards,
+  then zig-zagging right. It controls the RGB values with 3-bit resolution. You can use 4, but youre limited to ~25 tiles. At 3 bit,
+  you can control ~55.
 
-  For a prototype, we just need to control 16: 12 leds and 4 "layers" The bit that's going to be difficult is this guy wrote this at a hardware level.
-  The weird all caps variables are registers on the arduino, and he uses that to make sure the clock speed is high enough, instead of going through the SPI library.
+  Colors are set by calling the LED() method. PWM is handled in the background, so you are able to use blocking statements like delay()
+  if you wish
 
-  Also important to note, this essentially bit-bangs the outputs at different rates, creating PWM signals that vary brightness, that's why the clock speed is so high and
-  the code is so complicated. We may have to have two arduinos to run all of the tiles, but we'll see if we can do it with one, maybe reducing the resolution of the PWM.
+  TODO: Get to work on the Mega
+  TODO: Reduce memory footprint
+  TODO: Mess with SPI speed
 */
 
 #include <SPI.h>// SPI Library used to clock data out to the shift registers
@@ -23,31 +23,28 @@
 
 //***variables***variables***variables***variables***variables***variables***variables***variables
 //These variables are used by multiplexing and Bit Angle Modulation Code
-int shift_out;//used in the code a lot in for(i= type loops
-byte anode[4] = {
-  0b00001110,
-  0b00001101,
-  0b00001011,
-  0b00000111
+int shift_out; //index of which bits to shift out
+byte anode[4] = { //anodes for multiplexing
+  0b00001000,
+  0b00000001, //FIXME Hackish
+  0b00000010,
+  0b00000100
 };
 
 int activeRow = 0;
 
-const int tileRows = 6;
-const int tileCols = 9;
+const int tileRows = 1; //Rows and Columns in the dancefloor
+const int tileCols = 1;
 const int totalTiles = tileRows * tileCols;
 
-//This is how the brightness for every LED is stored,
-//Each LED only needs a 'bit' to know if it should be ON or OFF, so 64 Bytes gives you 512 bits= 512 LEDs
-//Since we are modulating the LEDs, using 4 bit resolution, each color has 4 arrays containing 64 bits each
-//Only 4 bits of each byte contain the information to be written
-byte red01[totalTiles * 4], red2[totalTiles * 4];
+
+byte red01[totalTiles * 4], red2[totalTiles * 4]; //Arrays that store the bits for how bright each Led should be
 byte green01[totalTiles * 4], green2[totalTiles * 4];
 byte blue01[totalTiles * 4], blue2[totalTiles * 4];
 //notice how more resolution will eat up more of your precious RAM
 
 int anodelevel = 0; //this increments through the anode levels
-int BAM_Bit, BAM_Counter = 0; // Bit Angle Modulation variables to keep track of things
+int BAM_Bit, BAM_Counter = 0; // Bit Angle Modulation variables to keep track of the cycle in the pwm
 
 int k = 0;
 
@@ -57,7 +54,7 @@ unsigned long start;//for a millis timer to cycle through the animations
 //****setup****setup****setup****setup****setup****setup****setup****setup****setup****setup****setup****setup****setup
 void setup() {
 
-  SPI.setBitOrder(MSBFIRST);//Most Significant Bit First
+  SPI.setBitOrder(LSBFIRST);//Least Significant Bit First
   SPI.setDataMode(SPI_MODE0);// Mode 0 Rising edge of data, keep clock low
   SPI.setClockDivider(SPI_CLOCK_DIV2);//Run the data in at 16MHz/2 - 8MHz
 
@@ -69,8 +66,7 @@ void setup() {
   TCCR1B = B00001011;//bit 3 set to place in CTC mode, will call an interrupt on a counter match
   //bits 0 and 1 are set to divide the clock by 64, so 16MHz/64=250kHz
   TIMSK1 = B00000010;//bit 1 set to call the interrupt on an OCR1A match
-  OCR1A = 140; // you can play with this, but I set it to 30, which means:
-  //our clock runs at 250kHz, which is 1/250kHz = 4us
+  OCR1A = 140; // play with this to increase or reduce cycle rate
   //with OCR1A set to 30, this means the interrupt will be called every (30+1)x4us=124us,
   // which gives a multiplex frequency of about 8kHz
 
@@ -91,14 +87,15 @@ void loop() { //***start loop***start loop***start loop***start loop***start loo
 
   //Each animation located in a sub routine
   // To control an LED, you simply:
-  // LED(level you want 0-7, row you want 0-7, column you want 0-7, red brighness 0-15, green brighness 0-15, blue brighness 0-15);
+  // LED(row you want, column you want, red brighness 0-7, green brighness 0-7, blue brighness 0-7);
 
 
 
 
-  testFade();
-//  allOn();
-//  while(true) delay(1000);
+  //testFade();
+  //testRow();
+    //allOn();
+    testMulti();
 
 
 
@@ -110,7 +107,7 @@ void LED(int row, int column, byte red, byte green, byte blue) { //****LED Routi
   //This is where it all starts
   //This routine is how LEDs are updated, with the inputs for the LED location and its R G and B brightness levels
 
-  // First, check and make sure nothing went beyond the limits, just clamp things at either 0 or 7 for location, and 0 or 15 for brightness
+  // Commented out for speed. may not matter
 
   //  if (row < 0)
   //    row = 0;
@@ -134,21 +131,19 @@ void LED(int row, int column, byte red, byte green, byte blue) { //****LED Routi
   //    blue = 15;
 
 
-  //There are 512 LEDs in the floor, that needs to be translated into a number from 0 to 511
-  //The way I did indexing matches how the individual bytes are written in the final design. The first row of each tile represents the first 1/4 of the indexes, the next row the next 1/4 and so on.
-  //from there I used the ternary operator to allow the indices to zigzag across the dancefloor with the tiles.
-  int whichbyte = int(((column & 0x07) < 4) ? (row & 0x03) * totalTiles + (column >> 3) * (tileRows << 1) + (row >> 2) : (row & 0x03) * totalTiles + ((column >> 3) + 1) * (tileRows << 1) - (row >> 2) - 1);
+  //Best line of code ever
+  //Takes the row and column input and indexes them to how we are going to write them to the floor
+  //I wäs having speed issues so I used a ternary operator, masks and shifts but essentially it says:
+  //if(column%4 < 4) whichbyte = row%4 * totalTiles + column*tileRows/4 + row/4;
+  //else whichbyte = row%4 * totalTiles + (column+8)*tileRows/4 - row/4 - 1;
+  int whichbyte = int(((column & 0x07) < 4)
+                      ? (row & 0x03) * totalTiles + (column >> 3)*(tileRows << 1) + (row >> 2)
+                      : (row & 0x03) * totalTiles + ((column >> 3) + 1)*(tileRows << 1) - (row >> 2) - 1);
   int whichbit = int(column & 0x03);
 
-  //  Serial.print(row);
-  //  Serial.print(", ");
-  //  Serial.print(column);
-  //  Serial.print(", ");
-  //  Serial.println(whichbyte);
 
 
-  //These arrays contain the 4 bits of the color resolution. Each byte contains 4 bits of useful information. red and blue contain it in the most significant
-  //4 bits. Green in the least. This is because they will be bitwise OR'd together later to send the two byte package to each tile in the form R,G,B,row
+  //These arrays contain the 3 bits of the color resolution. bits 0&1 of each led for a row within a tile
   bitWrite(red01[whichbyte], whichbit, bitRead(red, 0));
   bitWrite(red01[whichbyte], whichbit + 4, bitRead(red, 1));
   bitWrite(red2[whichbyte], whichbit, bitRead(red, 2));
@@ -166,19 +161,17 @@ void LED(int row, int column, byte red, byte green, byte blue) { //****LED Routi
 ISR(TIMER1_COMPA_vect) { //***MultiPlex BAM***MultiPlex BAM***MultiPlex BAM***MultiPlex BAM***MultiPlex BAM***MultiPlex BAM***MultiPlex BAM
 
   //This routine is called in the background automatically at frequency set by OCR1A
-  //In this code, I set OCR1A to 30, so this is called every 124us, giving each level in the cube 124us of ON time
-  //There are 8 levels, so we have a maximum brightness of 1/8, since the level must turn off before the next level is turned on
-  //The frequency of the multiplexing is then 124us*8=992us, or 1/992us= about 1kHz
-
+  //By increasing OCR1A to 140, the LEDs flicker more, but it allows this method to be called slow enough for us drive all the data we need
+  //out to all the tiles without them dimming noticeably
 
   PORTD |= 1 << blank_pin; //The first thing we do is turn all of the LEDs OFF, by writing a 1 to the blank pin
   //Note, in my bread-boarded version, I was able to move this way down in the cube, meaning that the OFF time was minimized
   //do to signal integrity and parasitic capcitance, my rise/fall times, required all of the LEDs to first turn off, before updating
   //otherwise you get a ghosting effect on the previous level
 
-  //This is 4 bit 'Bit angle Modulation' or BAM, There are 4 rows, so when a '1' is written to the color brightness,
+  //This is 3 bit 'Bit angle Modulation' or BAM, There are 4 rows, so when a '1' is written to the color brightness,
   //each level will have a chance to light up for 1 cycle, the BAM bit keeps track of which bit we are modulating out of the 4 bits
-  //Bam counter is the cycle count, meaning as we light up each level, we increment the BAM_Counter
+  //Bam counter is the cycle count, meaning as we light up each row, we increment the BAM_Counter
   if (BAM_Counter == 4)
     BAM_Bit++;
   else if (BAM_Counter == 12)
@@ -190,27 +183,28 @@ ISR(TIMER1_COMPA_vect) { //***MultiPlex BAM***MultiPlex BAM***MultiPlex BAM***Mu
     //Here's how this works, each case is the bit in the Bit angle modulation from 0-4,
     case 0:
       for (shift_out = activeRow; shift_out < activeRow + totalTiles; shift_out++) {
+        SPI.transfer((blue01[shift_out] << 4) | anode[BAM_Counter & 0x03]);
         SPI.transfer((red01[shift_out] << 4) | (green01[shift_out] & 0x0F));
-        SPI.transfer((blue01[shift_out] << 4) | anode[BAM_Counter % 4]);
       }
       break;
     case 1:
       for (shift_out = activeRow; shift_out < activeRow + totalTiles; shift_out++) {
-        SPI.transfer((red01[shift_out] & 0xF0) | (green01[shift_out] >> 4));
         SPI.transfer((blue01[shift_out] & 0xF0) | anode[BAM_Counter % 4]);
+        SPI.transfer((red01[shift_out] & 0xF0) | (green01[shift_out] >> 4));
       }
       break;
     case 2:
       for (shift_out = activeRow; shift_out < activeRow + totalTiles; shift_out++) {
-        SPI.transfer((red2[shift_out] << 4) | (green2[shift_out] & 0x0F));
         SPI.transfer((blue2[shift_out] << 4) | anode[BAM_Counter % 4]);
+        SPI.transfer((red2[shift_out] << 4) | (green2[shift_out] & 0x0F));
       }
-      //Here is where the BAM_Counter is reset back to 0, it's only 4 bit, but since each cycle takes 3 counts,
+      //Here is where the BAM_Counter is reset back to 0, it's only 3 bit, but since each cycle takes 4counts,
       if (BAM_Counter == 28) {
         BAM_Counter = 0;
         BAM_Bit = 0;
       }
       break;
+      
   }//switch_case
 
   PORTD |= 1 << latch_pin; //Latch pin HIGH
@@ -263,16 +257,45 @@ void testFade() {
         }
       }
 
-    }else{
-      delay(1);
     }
   }
+}
+void testRow() {
+  int xxx = 0, yyy = 0, red = 7, green = 0, blue = 0;
+  while (true) {
+    for (yyy = 0; yyy < 4; yyy++) {
+      for (xxx = 0; xxx < 4; xxx++) {
+        LED(xxx, yyy, red, green, blue);
+      }
+      delay(1000);
+      for (xxx = 0; xxx < 4; xxx++) {
+        LED(xxx, yyy, 0, 0, 0);
+      }
+    }
+    for (xxx = 0; xxx < 4; xxx++) {
+      for (yyy = 0; yyy < 4; yyy++) {
+        LED(xxx, yyy, red, green, blue);
+      }
+      delay(1000);
+      for (yyy = 0; yyy < 4; yyy++) {
+        LED(xxx, yyy, 0, 0, 0);
+      }
+    }
+  }
+}
+
+void testMulti(){
+//  for(int i=0; i<4; i++){
+//    LED(i,i,7,7,7);
+//  }
+  LED(0,0,7,7,7);
+  delay(1000);
 }
 
 void allOn() {
   for (int xxx = 0; xxx < tileRows * 4; xxx++) {
     for (int yyy = 0; yyy < tileCols * 4; yyy++) {
-      LED(xxx, yyy, 7, 4, 2);
+      LED(xxx, yyy, 0, 0, 7);
     }
   }
 }
